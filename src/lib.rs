@@ -383,22 +383,22 @@ impl Into<String> for &Instruction {
 pub struct Asm6502 {
     pub input: String,
     pub instructions: Vec<Instruction>,
-    pub output: Vec<u8>,
+    memory_start: u16,
 }
 
 impl Asm6502 {
-    pub fn new(data: String) -> Self {
+    pub fn new(data: String, memory_start: u16) -> Self {
         Asm6502 {
             input: data.replace("\r\n", "\n").trim().to_string(),
             instructions: vec![],
-            output: vec![],
+            memory_start,
         }
     }
     pub fn compile(&mut self) -> Result<Vec<Instruction>> {
         let mut result = vec![];
         let mut labels: HashMap<String, u16> = HashMap::new();
         let mut line_number: usize = 1;
-        let mut first_addr: u16 = 0x8000;
+        let mut first_addr: u16 = self.memory_start;
         for line in self.input.split("\n") {
             let addr = (first_addr + line_number as u16 - 1) as u16;
             match Instruction::from_source_line(&labels, line) {
@@ -435,7 +435,7 @@ mod tests {
     fn general_parse() {
         let mut asm = Asm6502::new(
             "LDA #%0101\nSTA ($15,X)\nlabel_a\tEOR ($2A),Y\nTAX\nJMP (label_a)\nADC $C001,X\nINC $F001,X\nLDA $01,X\nLDA ($01),Y\nBPL $2D\nLDY $02\nLDX label_a".to_string(),
-        );
+        0x8000);
         match asm.compile() {
             Ok(instructions) => {
                 let mut bytes: Vec<u8> = vec![];
