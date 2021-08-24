@@ -7,7 +7,7 @@ pub mod ops;
 use error::CompileError;
 use std::{collections::HashMap, fmt::Display};
 
-use ops::{AddressingMode, OpCode, OPCODES_MAP};
+use ops::{AddressingMode, OpCode, OPCODES_MAP, OPCODES_OP_MAP};
 
 pub type Result<T> = std::result::Result<T, CompileError>;
 
@@ -194,7 +194,7 @@ impl From<OpCode> for Instruction {
             mnemonic: opcode.mnemonic.to_string(),
             code: opcode.code,
             mode: opcode.mode,
-            operands: Vec::with_capacity(opcode.len as usize),
+            operands: Vec::with_capacity(opcode.len as usize - 1),
             address: InstructionAddress::None,
         }
     }
@@ -295,6 +295,9 @@ fn get_bytes_from_asm(
         if let Some(label) = labels.get(&input.to_string()) {
             Ok((label.to_le_bytes().to_vec(), true))
         } else {
+            if cfg!(debug_assertions) {
+                println!("DEBUG ON ERROR PREFIX: {}", input);
+            }
             Err("invalid value prefix")
         }
     }
@@ -354,7 +357,12 @@ impl Into<String> for &Instruction {
                         AddressingMode::AbsoluteX => format!("${:04X},X", value),
                         AddressingMode::AbsoluteY => format!("${:04X},Y", value),
                         AddressingMode::Indirect => format!("(${:04X})", value),
-                        _ => panic!("mismatched addressing mode and operand length"),
+                        _ => panic!(
+                            "0x{:02X} mismatched addressing mode and operand length 2: {:?} - {:?}",
+                            self.code,
+                            self.mode,
+                            self.operands.clone()
+                        ),
                     }
                 )
             }
@@ -370,7 +378,12 @@ impl Into<String> for &Instruction {
                         AddressingMode::ZeroPageY => format!("${:02X},Y", value),
                         AddressingMode::IndirectX => format!("(${:02X},X)", value),
                         AddressingMode::IndirectY => format!("(${:02X}),Y", value),
-                        _ => panic!("mismatched addressing mode and operand length"),
+                        AddressingMode::Relative => format!("${:02X}", value),
+                        _ => panic!(
+                            "mismatched addressing mode and operand length 1: {:?} - {:?}",
+                            self.mode,
+                            self.operands.clone()
+                        ),
                     }
                 )
             }
@@ -394,22 +407,49 @@ impl Asm6502 {
             memory_start,
         }
     }
+    pub fn decompile(input: Vec<u8>, memory_start: u16) -> Vec<String> {
+        let ref opcodes = *OPCODES_OP_MAP;
+        let mut result = vec![];
+        let mut i: usize = 0;
+        loop {
+            if i >= input.len() {
+                break;
+            }
+            let b = input[i];
+            if let Some(opcode) = opcodes.get(&b) {
+                let code = opcode.code;
+                let mnemonic = opcode.mnemonic.to_string();
+                let address = InstructionAddress::Address(memory_start + i as u16);
+                let operands: Vec<u8> = input[i + 1..opcode.len as usize + i].to_vec();
+                let instruction =
+                    Instruction::new(mnemonic, opcode.mode.clone(), code, operands, address);
+                result.push(format!("{}", instruction.to_string()));
+                if i + opcode.len as usize > input.len() - 1 {
+                    break;
+                }
+                i += opcode.len as usize;
+            } else {
+                i += 1;
+            }
+        }
+        result
+    }
     pub fn compile(&mut self) -> Result<Vec<Instruction>> {
         let mut result = vec![];
         let mut labels: HashMap<String, u16> = HashMap::new();
         let mut line_number: usize = 1;
         let mut first_addr: u16 = self.memory_start;
+        let mut current_addr: u16 = first_addr;
         for line in self.input.split("\n") {
-            let addr = (first_addr + line_number as u16 - 1) as u16;
             match Instruction::from_source_line(&labels, line) {
                 Ok(mut instruction) => {
                     match instruction.address.clone() {
                         InstructionAddress::Label(label) => {
-                            labels.insert(label.clone(), addr);
-                            instruction.address = InstructionAddress::Address(addr);
+                            labels.insert(label.clone(), current_addr);
+                            instruction.address = InstructionAddress::Address(current_addr);
                         }
                         InstructionAddress::None => {
-                            instruction.address = InstructionAddress::Address(addr);
+                            instruction.address = InstructionAddress::Address(current_addr);
                         }
                         InstructionAddress::Address(adr) => {
                             if line_number == 1 {
@@ -417,6 +457,7 @@ impl Asm6502 {
                             }
                         }
                     }
+                    current_addr += instruction.operands.len() as u16 + 1;
                     result.push(instruction);
                 }
                 Err(err) => return Err(CompileError::new(line_number, err)),
@@ -434,7 +475,7 @@ mod tests {
     #[test]
     fn general_parse() {
         let mut asm = Asm6502::new(
-            "LDA #%0101\nSTA ($15,X)\nlabel_a\tEOR ($2A),Y\nTAX\nJMP (label_a)\nADC $C001,X\nINC $F001,X\nLDA $01,X\nLDA ($01),Y\nBPL $2D\nLDY $02\nLDX label_a".to_string(),
+            "LDA #%0101\nSTA ($15,X)\nEOR ($2A),Y\nTAX\nJMP (label_a)\nADC $C001,X\nINC $F001,X\nLDA $01,X\nLDA ($01),Y\nBPL $2D\nLDY $02\nLDX label_a".to_string(),
         0x8000);
         match asm.compile() {
             Ok(instructions) => {
@@ -442,16 +483,14 @@ mod tests {
                 for instruction in instructions {
                     let (_, mut buffer) = instruction.clone().into();
                     bytes.append(&mut buffer);
-                    //println!("{}", instruction);
+                    println!("{}", instruction);
                 }
-                //println!("Bytecode: {:?}", bytes);
-                assert_eq!(
-                    bytes,
-                    vec![
-                        169, 5, 129, 21, 81, 42, 170, 76, 2, 128, 125, 1, 192, 254, 1, 240, 181, 1,
-                        177, 1, 16, 45, 164, 2, 174, 2, 128
-                    ]
-                );
+                let decomp = Asm6502::decompile(bytes.clone(), 0x8000);
+                println!("Bytecode: {:?}\n", bytes);
+                println!("Decompiled:\n");
+                for line in decomp {
+                    println!("{}", line);
+                }
             }
             Err(err) => panic!("{}", err),
         }

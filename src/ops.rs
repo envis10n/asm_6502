@@ -413,7 +413,13 @@ lazy_static! {
         OpCode::new(0x8f, "*SAX", 3, 4, AddressingMode::Absolute),
         OpCode::new(0x83, "*SAX", 2, 6, AddressingMode::IndirectX), // NOP STA
     ];
-
+    pub static ref OPCODES_OP_MAP: HashMap<u8, &'static OpCode> = {
+        let mut map: HashMap<u8, &'static OpCode> = HashMap::new();
+        for cpuop in &*CPU_OP_CODES {
+            map.insert(cpuop.code, cpuop);
+        }
+        map
+    };
     pub static ref OPCODES_MAP: HashMap<&'static str, Vec<&'static OpCode>> = {
         let mut map: HashMap<&'static str, Vec<&'static OpCode>> = HashMap::new();
         for cpuop in &*CPU_OP_CODES {
